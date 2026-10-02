@@ -1,0 +1,14 @@
+{
+  "name": "ai-workbench",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "AI 工作台 · 一个链接聚合所有作品（链藏 / 听藏）",
+  "scripts": {
+    "start": "node app/hub.mjs",
+    "sync": "node scripts/sync.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

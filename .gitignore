@@ -1,0 +1,9 @@
+node_modules/
+.env
+*.log
+.DS_Store
+Thumbs.db
+
+# 生成物：由 scripts/sync.mjs 从各自仓库重新生成，不进版本库
+app/link/
+app/voice/
