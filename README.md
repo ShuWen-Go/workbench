@@ -81,6 +81,10 @@ https://liancang.app.workbuddy.host/?token=你的口令
 > 为什么不用 HTTP Basic：云端网关会把 `Authorization` 头**剥掉**（本地正常、上云一律 401）。
 > 所以改走 Cookie / `X-VV-Token` / 查询参数三条通道。
 
+⚠️ `.env` 里**本地也保留了口令**（`hub_token`，不是子应用的 `vv_token`）——
+这是有意的：发布打的是当前目录，漏设口令会把「会花 DeepSeek 钱的入口」裸奔出去。
+本地要免登录就临时清空 `VV_ACCESS_TOKEN` 再启动。
+
 ---
 
 ## 演示数据从哪来（许可与可公开性）
