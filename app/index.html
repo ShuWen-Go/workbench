@@ -102,6 +102,11 @@
     margin-top:22px;font-size:12.5px;color:var(--sub);
     border-left:2px solid var(--line);padding-left:16px;
   }
+  /* 卡片内的说明文字：去掉页面级左线，压缩留白 */
+  .card .note{
+    margin-top:10px;padding-left:0;border-left:none;
+    font-size:12px;line-height:1.6;
+  }
 
   /* ---------- Roadmap ---------- */
   .road{display:grid;grid-template-columns:1fr 1fr;gap:16px}
@@ -180,10 +185,13 @@
           <li>转写在本地完成，<strong>录音不出机器</strong></li>
           <li>纪要里每个结论都能<strong>点时间戳回听</strong></li>
           <li>错字靠确定性词表修（杠杆 31:1），不靠堆大模型</li>
+          <li><strong>静音段幻觉闸门</strong>：模型会在没人说话的段落"背提示词"凭空造句，已用四层规则挡住</li>
         </ul>
+        <p class="note">演示音频取自公开语料 <strong>AISHELL-4</strong>（Apache-2.0）：一场 38 分钟的家长会讨论，
+          剧本演绎、说话人匿名，可直接公开。</p>
         <div class="metrics">
-          <span class="metric">RTF 0.60</span>
-          <span class="metric">纠错 37 处 / 误伤 0</span>
+          <span class="metric">38 分钟会议 · RTF 0.51</span>
+          <span class="metric">核验 25 / 25 命中</span>
         </div>
         <div class="acts">
           <a href="voice/">打开演示 ↗</a>
