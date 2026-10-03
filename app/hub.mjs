@@ -86,22 +86,73 @@ function startApp(app, attempt = 0) {
 }
 
 // ===== 访问控制 =====
-// 三条通道，**不用 Authorization**：云端网关会把那个头剥掉（实测踩过）。
-//   ① Cookie hub_token ② 请求头 X-VV-Token ③ URL 查询 ?token=
+// 四条通道，**不用 Authorization**：云端网关会把那个头剥掉（实测踩过）。
+//   ① Cookie hub_token ② Cookie vv_token（旧版听藏留下的，兼容，别让老浏览器撞死墙）
+//   ③ 请求头 X-VV-Token ④ URL 查询 ?token=
 // 未配置口令 = 完全不启用（本地开发无感）。
+const COOKIE_NAMES = ['hub_token', 'vv_token'];
+const UNLOCK_PATH = '/__unlock';
+
+function readCookieToken(req, name) {
+  const m = new RegExp('(?:^|;\\s*)' + name + '=([^;]*)').exec(String(req.headers.cookie || ''));
+  if (!m) return null;
+  try { return decodeURIComponent(m[1]); } catch { return null; }
+}
+
+function cookieHeader(token, maxAge = 2592000) {
+  return `hub_token=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}`;
+}
+
+// 只允许跳回本站路径，避免被当成开放重定向
+function safeNext(raw) {
+  const s = String(raw || '');
+  return s.startsWith('/') && !s.startsWith('//') ? s : '/';
+}
+
+function readBody(req, limit = 2048) {
+  return new Promise((resolve) => {
+    let n = 0;
+    const chunks = [];
+    req.on('data', (c) => {
+      n += c.length;
+      if (n > limit) { req.destroy(); resolve(''); return; }
+      chunks.push(c);
+    });
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    req.on('error', () => resolve(''));
+  });
+}
+
+// 登录页：不再只留一句"请用带口令的链接打开"（实测这就是个死胡同 ——
+// 裸域名进来的人、以及浏览器里只有旧 cookie 的人，都卡在这里出不去）
+function renderUnlock(res, { error = '', next = '/' } = {}) {
+  res.writeHead(401, { 'Content-Type': 'text/html; charset=utf-8' });
+  res.end(`<!doctype html><meta charset="utf-8"><title>需要访问口令</title>
+<div style="font-family:system-ui,-apple-system,'Segoe UI',sans-serif;max-width:380px;margin:14vh auto;padding:0 24px;line-height:1.9;color:#1b1b1f">
+  <h2 style="margin:0 0 6px">需要访问口令</h2>
+  <p style="color:#777;margin:0 0 20px;font-size:14px">这是一个私人工作台，输入口令后浏览器会记住。</p>
+  ${error ? `<p style="color:#b4232a;font-size:14px;margin:0 0 12px">${error}</p>` : ''}
+  <form method="POST" action="${UNLOCK_PATH}" style="display:flex;gap:8px">
+    <input type="hidden" name="next" value="${String(next).replace(/"/g, '&quot;')}">
+    <input name="token" type="password" autofocus autocomplete="current-password"
+           placeholder="访问口令" style="flex:1;padding:10px 12px;font-size:15px;border:1px solid #d8d8e0;border-radius:8px">
+    <button type="submit" style="padding:10px 18px;font-size:15px;border:0;border-radius:8px;background:#C00000;color:#fff;cursor:pointer">进入</button>
+  </form>
+  <p style="color:#aaa;font-size:12.5px;margin-top:18px">也可以直接用带口令的链接：<code>?token=你的口令</code></p>
+</div>`);
+}
+
 function checkAuth(req, res) {
   if (!ACCESS_TOKEN) return true;
   if (req.headers['x-vv-token'] === ACCESS_TOKEN) return true;
-
-  const ck = /(?:^|;\s*)hub_token=([^;]*)/.exec(String(req.headers.cookie || ''));
-  if (ck) {
-    try { if (decodeURIComponent(ck[1]) === ACCESS_TOKEN) return true; } catch { /* 畸形 cookie */ }
+  for (const name of COOKIE_NAMES) {
+    if (readCookieToken(req, name) === ACCESS_TOKEN) return true;
   }
 
   let url = null;
   try { url = new URL(req.url, 'http://localhost'); } catch { /* 畸形 URL */ }
   if (url && url.searchParams.get('token') === ACCESS_TOKEN) {
-    const cookie = `hub_token=${encodeURIComponent(ACCESS_TOKEN)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000`;
+    const cookie = cookieHeader(ACCESS_TOKEN);
     if (String(req.headers.accept || '').includes('text/html')) {
       url.searchParams.delete('token');
       const qs = url.searchParams.toString();
@@ -114,10 +165,7 @@ function checkAuth(req, res) {
     return false;
   }
 
-  res.writeHead(401, { 'Content-Type': 'text/html; charset=utf-8' });
-  res.end('<meta charset="utf-8"><div style="font-family:system-ui;padding:48px;line-height:1.9">' +
-    '<h2>需要访问口令</h2><p>请用带口令的链接打开，例如 <code>?token=你的口令</code></p>' +
-    '<p style="color:#888">通过后浏览器会记住，不用每次输入。</p></div>');
+  renderUnlock(res, { next: url ? url.pathname : '/' });
   return false;
 }
 
@@ -133,6 +181,21 @@ function rateLimited(req, res) {
     return true;
   }
   rateWindow.push(now);
+  return false;
+}
+
+// 口令尝试单独限流：全局计数（反代后 per-IP 无意义），分钟级封顶，防暴力猜
+const unlockWindow = [];
+const UNLOCK_PER_MIN = 10;
+function unlockLimited(res) {
+  const now = Date.now();
+  while (unlockWindow.length && now - unlockWindow[0] > 60000) unlockWindow.shift();
+  if (unlockWindow.length >= UNLOCK_PER_MIN) {
+    res.writeHead(429, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end('<meta charset="utf-8"><p style="font-family:system-ui;padding:48px">尝试太频繁，请稍后再试。</p>');
+    return true;
+  }
+  unlockWindow.push(now);
   return false;
 }
 
@@ -191,7 +254,29 @@ function serveStatic(req, res, urlPath) {
 }
 
 // ===== 主服务 =====
-const server = http.createServer((req, res) => {
+const server = http.createServer(async (req, res) => {
+  const pathname0 = (req.url || '/').split('?')[0];
+
+  // 口令登录：必须在鉴权之前处理 —— 它本身就是"怎么拿到凭据"
+  if (pathname0 === UNLOCK_PATH) {
+    if (req.method !== 'POST') {
+      res.writeHead(405, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('请用表单提交');
+      return;
+    }
+    if (unlockLimited(res)) return;
+    const form = new URLSearchParams(await readBody(req));
+    const token = form.get('token') || '';
+    if (ACCESS_TOKEN && token === ACCESS_TOKEN) {
+      res.writeHead(302, { 'Set-Cookie': cookieHeader(ACCESS_TOKEN), Location: safeNext(form.get('next')) });
+      res.end();
+    } else {
+      console.log('[hub] 口令尝试失败');
+      renderUnlock(res, { error: '口令不对，再试一次。', next: safeNext(form.get('next')) });
+    }
+    return;
+  }
+
   if (!checkAuth(req, res)) return;
 
   // 只对「提交类」POST 限流；GET（轮询、静态）一律放行
